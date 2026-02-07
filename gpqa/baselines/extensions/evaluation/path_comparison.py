@@ -3,10 +3,11 @@ Path comparison for divergence points analysis.
 """
 import sys
 import os
+import random
 path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(path)
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 import torch
 from llms.engine import Engine
 from extensions.generate import generate_simple
@@ -225,4 +226,108 @@ def compare_paths_for_divergence_point(
             'is_correct': path_b_correct
         },
         'accuracy_diff': 1.0 if path_a_correct and not path_b_correct else (-1.0 if not path_a_correct and path_b_correct else 0.0)
+    }
+
+
+def compare_paths_with_sampling(
+    engine: Engine,
+    divergence_point: Dict,
+    full_context_before: str,
+    max_new_tokens: int = 512,
+    k: int = 5,
+    temperature: float = 0.7,
+    seed: Optional[int] = None,
+    verbose: bool = False,
+) -> Dict:
+    """
+    从分歧点的两个 token 分别延续采样 k 次，对比两条路径的正确率分布。
+
+    :param engine: LLM 引擎
+    :param divergence_point: 分歧点信息（来自 collect_divergence_points）
+    :param full_context_before: 分歧点之前的完整上下文（包括问题和已生成的 token）
+    :param max_new_tokens: 每次延续的最大生成 token 数
+    :param k: 每条路径采样的次数
+    :param temperature: 采样温度（>0 时启用 do_sample）
+    :param seed: 基础随机种子；每次采样使用 seed + i 以得到不同结果
+    :param verbose: 是否打印详细信息
+    :return: 包含 path_a_correct_count, path_b_correct_count, path_a_accuracy, path_b_accuracy,
+             path_a_better (Path A 正确率 > Path B 正确率), 以及单次结果列表
+    """
+    selected_token = divergence_point['selected_token']
+    final_token = divergence_point['final_token']
+    correct_answer_index = divergence_point['correct_answer_index']
+
+    path_a_prompt = full_context_before + selected_token
+    path_b_prompt = full_context_before + final_token
+
+    path_a_correct_count = 0
+    path_b_correct_count = 0
+    path_a_results = []
+    path_b_results = []
+
+    for i in range(k):
+        if seed is not None:
+            torch.manual_seed(seed + i)
+            if hasattr(random, 'seed'):
+                random.seed(seed + i)
+
+        # Path A 延续 k 次
+        try:
+            path_a_text = generate_simple(
+                engine=engine,
+                prompt=path_a_prompt,
+                max_new_tokens=max_new_tokens,
+                output_dict=False,
+                do_sample=temperature > 0,
+                temperature=temperature if temperature > 0 else None,
+            )
+            path_a_answer = extract_answer_from_text(path_a_text)
+            path_a_correct = (
+                path_a_answer is not None
+                and ord(path_a_answer) - ord('A') == correct_answer_index
+            )
+            if path_a_correct:
+                path_a_correct_count += 1
+            path_a_results.append({'answer': path_a_answer, 'is_correct': path_a_correct})
+        except Exception as e:
+            if verbose:
+                print(f"Path A sample {i} error: {e}")
+            path_a_results.append({'answer': None, 'is_correct': False})
+
+        # Path B 延续 k 次
+        try:
+            path_b_text = generate_simple(
+                engine=engine,
+                prompt=path_b_prompt,
+                max_new_tokens=max_new_tokens,
+                output_dict=False,
+                do_sample=temperature > 0,
+                temperature=temperature if temperature > 0 else None,
+            )
+            path_b_answer = extract_answer_from_text(path_b_text)
+            path_b_correct = (
+                path_b_answer is not None
+                and ord(path_b_answer) - ord('A') == correct_answer_index
+            )
+            if path_b_correct:
+                path_b_correct_count += 1
+            path_b_results.append({'answer': path_b_answer, 'is_correct': path_b_correct})
+        except Exception as e:
+            if verbose:
+                print(f"Path B sample {i} error: {e}")
+            path_b_results.append({'answer': None, 'is_correct': False})
+
+    path_a_accuracy = path_a_correct_count / k if k > 0 else 0.0
+    path_b_accuracy = path_b_correct_count / k if k > 0 else 0.0
+
+    return {
+        'k': k,
+        'temperature': temperature,
+        'path_a_correct_count': path_a_correct_count,
+        'path_b_correct_count': path_b_correct_count,
+        'path_a_accuracy': path_a_accuracy,
+        'path_b_accuracy': path_b_accuracy,
+        'path_a_better': path_a_accuracy > path_b_accuracy,
+        'path_a_results': path_a_results,
+        'path_b_results': path_b_results,
     }

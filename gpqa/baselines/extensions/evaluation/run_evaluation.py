@@ -25,7 +25,10 @@ sys.path.append(path)
 from llms.engine import Engine
 from extensions.utils.gpqa_loader import load_gpqa_diamond, create_zero_shot_prompt
 from extensions.evaluation.divergence_analysis import collect_divergence_points
-from extensions.evaluation.path_comparison import compare_paths_for_divergence_point
+from extensions.evaluation.path_comparison import (
+    compare_paths_for_divergence_point,
+    compare_paths_with_sampling,
+)
 from extensions.evaluation.perturbation_evaluation import analyze_perturbation_start, evaluate_perturbation_impact
 from extensions.evaluation.visualization import create_all_visualizations
 
@@ -38,7 +41,10 @@ def run_evaluation(
     max_new_tokens: int = 512,
     device_id: int = None,
     seed: int = 42,
-    verbose: bool = True
+    verbose: bool = True,
+    sampling_k: int = 0,
+    sampling_max_divergence_points: int = 20,
+    sampling_temperature: float = 0.7,
 ):
     """
     运行完整的评估流程。
@@ -91,16 +97,20 @@ def run_evaluation(
     # 3. 收集分歧点
     if verbose:
         print("Step 3: Collecting divergence points...")
-    divergence_points = collect_divergence_points(
+    divergence_points, collect_stats = collect_divergence_points(
         engine=engine,
         dataset=dataset,
         max_new_tokens=max_new_tokens,
-        verbose=verbose
+        verbose=verbose,
+        return_stats=True,
     )
     
     if not divergence_points:
         print("No divergence points found!")
         return
+
+    total_token_steps = collect_stats.get("total_token_steps", 0)
+    divergence_rate = (len(divergence_points) / total_token_steps) if total_token_steps > 0 else 0.0
     
     # 保存分歧点
     divergence_file = output_path / f"divergence_points_{timestamp}.json"
@@ -150,6 +160,46 @@ def run_evaluation(
     if verbose:
         print(f"Saved path comparisons to {comparison_file}")
         print()
+
+    # 4b. 可选：多采样路径对比
+    sampling_results = None
+    if sampling_k > 0:
+        if verbose:
+            print("Step 4b: Running multi-sample path comparison...")
+        n_sampling = min(sampling_max_divergence_points, len(divergence_points))
+        sampling_results = []
+        for i in range(n_sampling):
+            if verbose and i % 5 == 0:
+                print(f"  Sampling divergence point {i+1}/{n_sampling}...")
+            div_point = divergence_points[i]
+            base_prompt = create_zero_shot_prompt(dataset[div_point['question_id']])
+            context_before = "".join(div_point.get('context_before', []))
+            full_context = base_prompt + context_before
+            try:
+                res = compare_paths_with_sampling(
+                    engine=engine,
+                    divergence_point=div_point,
+                    full_context_before=full_context,
+                    max_new_tokens=max_new_tokens,
+                    k=sampling_k,
+                    temperature=sampling_temperature,
+                    seed=seed,
+                    verbose=False,
+                )
+                sampling_results.append(res)
+            except Exception as e:
+                if verbose:
+                    print(f"  Error sampling divergence point {i}: {e}")
+        if sampling_results:
+            path_a_better_count = sum(1 for r in sampling_results if r.get('path_a_better', False))
+            if verbose:
+                print(f"  Path A better in {path_a_better_count}/{len(sampling_results)} divergence points (k={sampling_k})")
+            sampling_file = output_path / f"sampling_comparisons_{timestamp}.json"
+            with open(sampling_file, 'w', encoding='utf-8') as f:
+                json.dump(sampling_results, f, indent=2, ensure_ascii=False)
+            if verbose:
+                print(f"Saved sampling comparisons to {sampling_file}")
+        print()
     
     # 5. 分析扰动起始点
     if verbose:
@@ -174,7 +224,10 @@ def run_evaluation(
         divergence_points=divergence_points,
         path_comparisons=path_comparisons
     )
-    
+    evaluation_results["total_token_steps"] = total_token_steps
+    evaluation_results["divergence_rate"] = divergence_rate
+    evaluation_results["num_examples_processed"] = collect_stats.get("num_examples_processed", 0)
+
     # 保存评估结果
     eval_file = output_path / f"evaluation_results_{timestamp}.json"
     with open(eval_file, 'w', encoding='utf-8') as f:
@@ -218,6 +271,7 @@ def run_evaluation(
         print("Evaluation Summary")
         print("=" * 80)
         print(f"Total divergence points: {evaluation_results['total_divergence_points']}")
+        print(f"Divergence rate: {evaluation_results.get('divergence_rate', 0):.2%}")
         print(f"Path A (selected layer) accuracy: {evaluation_results['path_a_accuracy']:.2%}")
         print(f"Path B (final layer) accuracy: {evaluation_results['path_b_accuracy']:.2%}")
         print(f"Accuracy improvement: {evaluation_results['accuracy_improvement']:.2%}")
@@ -242,6 +296,10 @@ def generate_text_report(
         f.write("Overall Statistics\n")
         f.write("-" * 80 + "\n")
         f.write(f"Total divergence points: {evaluation_results['total_divergence_points']}\n")
+        total_steps = evaluation_results.get('total_token_steps', 0)
+        div_rate = evaluation_results.get('divergence_rate', 0.0)
+        f.write(f"Total token steps (across examples): {total_steps}\n")
+        f.write(f"Divergence rate: {div_rate:.2%}\n")
         f.write(f"Path A (selected layer) accuracy: {evaluation_results['path_a_accuracy']:.2%}\n")
         f.write(f"Path B (final layer) accuracy: {evaluation_results['path_b_accuracy']:.2%}\n")
         f.write(f"Accuracy improvement: {evaluation_results['accuracy_improvement']:.2%}\n")
@@ -253,6 +311,27 @@ def generate_text_report(
         f.write("-" * 80 + "\n")
         for layer, count in sorted(evaluation_results['perturbation_start_distribution'].items()):
             f.write(f"Layer {layer}: {count} occurrences\n")
+        f.write("\n")
+
+        # Path A 对且 Path B 错 子集的扰动起始层分布
+        neg_count = evaluation_results.get('negative_subset_count', 0)
+        neg_dist = evaluation_results.get('negative_subset_perturbation_start_distribution', {})
+        f.write("Negative Subset (Path A correct, Path B wrong) Perturbation Start Distribution\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"Negative subset size: {neg_count}\n")
+        for layer, count in sorted(neg_dist.items()):
+            f.write(f"Layer {layer}: {count} occurrences\n")
+        f.write("\n")
+
+        # 按 trough 深度分层
+        by_depth = evaluation_results.get('by_trough_depth', {})
+        f.write("By Trough Depth (final_layer - selected_layer)\n")
+        f.write("-" * 80 + "\n")
+        for label in ['shallow', 'mid', 'deep']:
+            if label not in by_depth:
+                continue
+            d = by_depth[label]
+            f.write(f"  {label}: count={d['count']}, Path A acc={d['path_a_accuracy']:.2%}, Path B acc={d['path_b_accuracy']:.2%}\n")
         f.write("\n")
         
         # 层熵值相关性
@@ -289,9 +368,12 @@ def main():
     parser.add_argument("--output", type=str, default="evaluation_results", help="Output directory")
     parser.add_argument("--max_examples", type=int, default=None, help="Maximum number of examples")
     parser.add_argument("--max_tokens", type=int, default=512, help="Maximum new tokens")
-    parser.add_argument("--device_id", type=int, default=None, help="GPU device ID")
+    parser.add_argument("--device_id", type=int, default=None, help="指定 GPU 编号（0, 1, 2, ...）；不指定则自动选卡。需在 GPU 上跑时请显式传入，例如 --device_id 0")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
+    parser.add_argument("--sampling_k", type=int, default=0, help="If >0, run k-sample path comparison on first N divergence points")
+    parser.add_argument("--sampling_max_divergence_points", type=int, default=20, help="Max divergence points to run sampling on (when --sampling_k > 0)")
+    parser.add_argument("--sampling_temperature", type=float, default=0.7, help="Temperature for sampling (when --sampling_k > 0)")
     
     args = parser.parse_args()
     
@@ -303,7 +385,10 @@ def main():
         max_new_tokens=args.max_tokens,
         device_id=args.device_id,
         seed=args.seed,
-        verbose=args.verbose
+        verbose=args.verbose,
+        sampling_k=args.sampling_k,
+        sampling_max_divergence_points=args.sampling_max_divergence_points,
+        sampling_temperature=args.sampling_temperature,
     )
 
 

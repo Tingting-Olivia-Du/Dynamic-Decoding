@@ -6,7 +6,7 @@ import os
 path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(path)
 
-from typing import List, Dict
+from typing import List, Dict, Tuple, Union
 from llms.engine import Engine
 from extensions.generate import generate_conservative_dynamic
 from extensions.utils.gpqa_loader import Example, create_zero_shot_prompt
@@ -16,8 +16,9 @@ def collect_divergence_points(
     engine: Engine,
     dataset: List[Example],
     max_new_tokens: int = 512,
-    verbose: bool = False
-) -> List[Dict]:
+    verbose: bool = False,
+    return_stats: bool = False,
+) -> Union[List[Dict], Tuple[List[Dict], Dict]]:
     """
     收集回退层与末层预测不同的token位置（分歧点）。
     
@@ -25,10 +26,13 @@ def collect_divergence_points(
     :param dataset: GPQA数据集（Example列表）
     :param max_new_tokens: 最大生成token数
     :param verbose: 是否打印详细信息
-    :return: 每个分歧点的信息列表
+    :param return_stats: 若为 True，返回 (divergence_points, stats)，stats 含 total_token_steps, num_examples_processed
+    :return: 每个分歧点的信息列表；若 return_stats=True 则为 (列表, stats)
     """
     divergence_points = []
-    
+    total_token_steps = 0
+    num_examples_processed = 0
+
     for question_id, example in enumerate(dataset):
         if verbose and question_id % 10 == 0:
             print(f"Processing question {question_id}/{len(dataset)}...")
@@ -58,7 +62,10 @@ def collect_divergence_points(
         
         if not selected_layers or not all_layer_tokens:
             continue
-        
+
+        total_token_steps += len(selected_layers)
+        num_examples_processed += 1
+
         # 确定总层数（从第一个token的信息中获取）
         num_layers = len(all_layer_tokens[0]) if all_layer_tokens else 0
         final_layer_idx = num_layers - 1
@@ -126,6 +133,13 @@ def collect_divergence_points(
     
     if verbose:
         print(f"\nTotal divergence points found: {len(divergence_points)}")
-        print(f"Divergence rate: {len(divergence_points) / sum(len(info.get('selected_layers', [])) for _ in range(len(dataset))) * 100:.2f}%")
-    
+        if total_token_steps > 0:
+            print(f"Divergence rate: {len(divergence_points) / total_token_steps * 100:.2f}% ({len(divergence_points)} / {total_token_steps} steps)")
+
+    if return_stats:
+        stats = {
+            "total_token_steps": total_token_steps,
+            "num_examples_processed": num_examples_processed,
+        }
+        return divergence_points, stats
     return divergence_points

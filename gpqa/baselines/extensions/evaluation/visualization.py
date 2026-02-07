@@ -209,6 +209,48 @@ def plot_accuracy_comparison(
     plt.close()
 
 
+def plot_perturbation_start_histogram(
+    evaluation_results: Dict,
+    output_file: Path,
+) -> None:
+    """
+    绘制扰动起始层直方图（全量 + 负面子集对比）。
+
+    :param evaluation_results: 含 perturbation_start_distribution 与 negative_subset_perturbation_start_distribution
+    :param output_file: 输出文件路径
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle('Perturbation Start Layer Distribution', fontsize=14)
+
+    # 全量分布
+    ax1 = axes[0]
+    dist = evaluation_results.get('perturbation_start_distribution', {})
+    if dist:
+        layers = sorted(dist.keys())
+        counts = [dist[l] for l in layers]
+        ax1.bar(layers, counts, alpha=0.7, edgecolor='black')
+    ax1.set_xlabel('Layer Index')
+    ax1.set_ylabel('Frequency')
+    ax1.set_title('All Divergence Points')
+    ax1.grid(True, alpha=0.3, axis='y')
+
+    # 负面子集（Path A 对且 Path B 错）
+    ax2 = axes[1]
+    neg_dist = evaluation_results.get('negative_subset_perturbation_start_distribution', {})
+    if neg_dist:
+        layers = sorted(neg_dist.keys())
+        counts = [neg_dist[l] for l in layers]
+        ax2.bar(layers, counts, alpha=0.7, edgecolor='black')
+    ax2.set_xlabel('Layer Index')
+    ax2.set_ylabel('Frequency')
+    ax2.set_title('Negative Subset (Path A correct, Path B wrong)')
+    ax2.grid(True, alpha=0.3, axis='y')
+
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
 def create_all_visualizations(
     divergence_points: List[Dict],
     evaluation_results: Dict,
@@ -216,19 +258,24 @@ def create_all_visualizations(
 ):
     """
     创建所有可视化图表。
-    
+
     :param divergence_points: 分歧点列表
     :param evaluation_results: 评估结果
     :param output_dir: 输出目录
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # 绘制熵值趋势
     entropy_file = output_dir / "entropy_trends.png"
     plot_entropy_trends(divergence_points, entropy_file)
     print(f"Saved entropy trends to {entropy_file}")
-    
+
     # 绘制准确率对比
     accuracy_file = output_dir / "accuracy_comparison.png"
     plot_accuracy_comparison(evaluation_results, accuracy_file)
     print(f"Saved accuracy comparison to {accuracy_file}")
+
+    # 扰动起始层直方图（全量 + 负面子集）
+    perturbation_hist_file = output_dir / "perturbation_start_histogram.png"
+    plot_perturbation_start_histogram(evaluation_results, perturbation_hist_file)
+    print(f"Saved perturbation start histogram to {perturbation_hist_file}")

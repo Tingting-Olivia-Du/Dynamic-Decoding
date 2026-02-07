@@ -100,7 +100,15 @@ def evaluate_perturbation_impact(
             'path_b_accuracy': 0.0,
             'accuracy_improvement': 0.0,
             'perturbation_start_distribution': {},
-            'layer_entropy_correlation': {}
+            'layer_entropy_correlation': {},
+            'avg_entropy_increase': 0.0,
+            'avg_affected_layers': 0.0,
+            'path_a_correct_count': 0,
+            'path_b_correct_count': 0,
+            'total_comparisons': 0,
+            'negative_subset_count': 0,
+            'negative_subset_perturbation_start_distribution': {},
+            'by_trough_depth': {},
         }
     
     # 1. 统计准确率
@@ -163,6 +171,53 @@ def evaluate_perturbation_impact(
             affected_layers.append(num_affected)
     
     avg_affected_layers = np.mean(affected_layers) if affected_layers else 0.0
+
+    # 6. 仅针对「Path A 对且 Path B 错」子集的扰动起始层分布（明确负面）
+    negative_subset_indices = [
+        i for i, comp in enumerate(path_comparisons)
+        if comp.get('path_a', {}).get('is_correct', False) and not comp.get('path_b', {}).get('is_correct', False)
+    ]
+    negative_subset_perturbation_starts = []
+    for i in negative_subset_indices:
+        analysis = analyze_perturbation_start(divergence_points[i])
+        start_layer = analysis.get('perturbation_start_layer')
+        if start_layer is not None:
+            negative_subset_perturbation_starts.append(start_layer)
+    negative_subset_perturbation_start_distribution = dict(Counter(negative_subset_perturbation_starts))
+    negative_subset_count = len(negative_subset_indices)
+
+    # 7. 按 trough 深度分层统计（trough_depth = final_layer - selected_layer）
+    trough_depth_bins = [(0, 5, 'shallow'), (6, 15, 'mid'), (16, 999, 'deep')]
+    by_trough_depth = {}
+    for low, high, label in trough_depth_bins:
+        indices = [
+            i for i, div_point in enumerate(divergence_points)
+            if low <= (div_point['final_layer'] - div_point['selected_layer']) <= high
+        ]
+        if not indices:
+            by_trough_depth[label] = {
+                'count': 0,
+                'path_a_accuracy': 0.0,
+                'path_b_accuracy': 0.0,
+                'perturbation_start_distribution': {},
+            }
+            continue
+        sub_comps = [path_comparisons[j] for j in indices]
+        sub_divs = [divergence_points[j] for j in indices]
+        a_correct = sum(1 for c in sub_comps if c.get('path_a', {}).get('is_correct', False))
+        b_correct = sum(1 for c in sub_comps if c.get('path_b', {}).get('is_correct', False))
+        sub_starts = []
+        for div_point in sub_divs:
+            analysis = analyze_perturbation_start(div_point)
+            start_layer = analysis.get('perturbation_start_layer')
+            if start_layer is not None:
+                sub_starts.append(start_layer)
+        by_trough_depth[label] = {
+            'count': len(indices),
+            'path_a_accuracy': a_correct / len(indices) if indices else 0.0,
+            'path_b_accuracy': b_correct / len(indices) if indices else 0.0,
+            'perturbation_start_distribution': dict(Counter(sub_starts)),
+        }
     
     return {
         'total_divergence_points': len(divergence_points),
@@ -175,5 +230,8 @@ def evaluate_perturbation_impact(
         'avg_affected_layers': avg_affected_layers,
         'path_a_correct_count': path_a_correct,
         'path_b_correct_count': path_b_correct,
-        'total_comparisons': total
+        'total_comparisons': total,
+        'negative_subset_count': negative_subset_count,
+        'negative_subset_perturbation_start_distribution': negative_subset_perturbation_start_distribution,
+        'by_trough_depth': by_trough_depth,
     }

@@ -14,6 +14,8 @@
 
 ### 基本使用
 
+评估需在 GPU 上跑时，请用 `--device_id` 指定卡号（不指定则自动选卡）：
+
 ```bash
 cd gpqa/baselines/extensions/evaluation
 python run_evaluation.py \
@@ -24,6 +26,8 @@ python run_evaluation.py \
     --verbose
 ```
 
+若希望只用某张物理卡（例如仅用 1 号卡），可先设置环境变量再运行：`CUDA_VISIBLE_DEVICES=1 python run_evaluation.py ... --device_id 0`（此时 0 即对应物理 1 号卡）。
+
 ### 参数说明
 
 - `--model`: 模型名称或路径（必需）
@@ -31,9 +35,12 @@ python run_evaluation.py \
 - `--output`: 输出目录（默认：evaluation_results）
 - `--max_examples`: 最大评估样本数（默认：全部）
 - `--max_tokens`: 最大生成token数（默认：512）
-- `--device_id`: GPU设备ID（默认：自动选择）
+- `--device_id`: 指定 GPU 编号（0, 1, 2, ...）；不传则自动选卡。**需要在 GPU 上跑时请显式传入**，例如 `--device_id 0` 使用第一张卡
 - `--seed`: 随机种子（默认：42）
 - `--verbose`: 打印详细信息
+- `--sampling_k`: 若大于 0，对前 N 个分歧点做 k 次采样路径对比（默认：0）
+- `--sampling_max_divergence_points`: 参与多采样对比的最大分歧点数量（默认：20）
+- `--sampling_temperature`: 多采样时的温度（默认：0.7）
 
 ### 输出文件
 
@@ -92,6 +99,8 @@ for div_point in divergence_points[:5]:  # 分析前5个
 
 ### 扰动分析
 - 扰动起始层分布：扰动从哪些层开始
+- 负面子集（Path A 对且 Path B 错）的扰动起始层分布
+- 按 trough 深度（final_layer - selected_layer）分层：shallow / mid / deep 的正确率与起始层
 - 扰动强度：熵值增加的幅度
 - 受影响层数：从扰动起始层到末层的层数
 
@@ -152,6 +161,25 @@ evaluation/
 ```bash
 pip install matplotlib numpy
 ```
+
+## 可选：使用 transformers-dynamic + GptOss 收集分歧点
+
+若需与 HF 的 `_entropy_decoding` 代码路径一致，可使用 `run_evaluation_hf_gpt_oss.py`（需将 transformers-dynamic 与 gpqa baselines 加入 PYTHONPATH）：
+
+```bash
+cd /path/to/Dynamic-Decoding
+PYTHONPATH="transformers-dynamic:gpqa/baselines:$PYTHONPATH" python gpqa/baselines/extensions/evaluation/run_evaluation_hf_gpt_oss.py \
+  --model /path/to/gpt-oss-checkpoint \
+  --data gpqa/baselines/dataset/gpqa_diamond.csv \
+  --output evaluation_results_hf \
+  --device_id 0 \
+  --max_examples 5 \
+  --max_tokens 8192 \
+  --run_path_comparison \
+  --verbose
+```
+
+输出与主流程兼容的 `divergence_points_hf.json` 及可选的 `path_comparisons_hf.json`，可用于同一套扰动分析与可视化（需将 JSON 键与 gpqa 格式对齐）。
 
 ## 相关文档
 

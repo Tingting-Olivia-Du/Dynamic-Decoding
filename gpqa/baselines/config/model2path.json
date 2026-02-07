@@ -1,0 +1,18 @@
+{
+    "GLM-4-9B-Chat": "/workspace/ckpt/glm-4-9b-chat-hf",
+    "Llama-3.1-8B-Instruct": "/workspace/ckpt/Meta-Llama-3.1-8B-Instruct", 
+    "Llama-3.1-70B-Instruct": "meta-llama/Llama-3.1-70B-Instruct",
+    "Llama-3.3-70B-Instruct": "meta-llama/Llama-3.3-70B-Instruct",
+    "Llama-3.1-Nemotron-70B-Instruct": "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+    "Qwen2.5-7B-Instruct": "/workspace/ckpt/Qwen2.5-7B-Instruct",
+    "Qwen2.5-72B-Instruct": "Qwen/Qwen2.5-72B-Instruct",
+    "Mistral-Large-Instruct-2407": "mistralai/Mistral-Large-Instruct-2407",
+    "Mistral-Large-Instruct-2411": "mistralai/Mistral-Large-Instruct-2411",
+    "c4ai-command-r-plus-08-2024": "CohereForAI/c4ai-command-r-plus-08-2024",
+    "glm-4-plus": "THUDM/glm-4-9b-chat",
+    "Mistral-7B-Instruct-v0.3": "/workspace/ckpt/Mistral-7B-Instruct-v0.3",
+    "gpt-oss-20b": "/workspace/ckpt/gpt-oss-20b",
+    "Qwen3-8B": "/workspace/ckpt/Qwen3-8B",
+    "Qwen3-32B": "/workspace/ckpt/Qwen3-32B",
+    "gemma-3-4b-it": "/workspace/ckpt/gemma-3-4b-it"
+}

@@ -1,0 +1,2 @@
+--测试入口--
+GPQA: "gpqa\baselines\run_baseline_diamond_vllm.py"

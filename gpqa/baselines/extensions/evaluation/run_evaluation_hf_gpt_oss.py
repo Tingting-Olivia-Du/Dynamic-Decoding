@@ -4,21 +4,26 @@ transformers-dynamic + GptOssForCausalLM (entropy_decoding from generation/utils
 
 Run from repo root with PYTHONPATH including transformers-dynamic and gpqa/baselines:
 
-  cd /path/to/Dynamic-Decoding
-  PYTHONPATH="transformers-dynamic:gpqa/baselines:$PYTHONPATH" python gpqa/baselines/extensions/evaluation/run_evaluation_hf_gpt_oss.py \
-    --model /path/to/your/gpt-oss-20b-trough-checkpoint \
-    --data gpqa/baselines/dataset/gpqa_diamond.csv \
-    --output evaluation_results_hf \
-    --device_id 0 \
-    --run_path_comparison \
-    --full_evaluation \
-    --verbose
+  cd /workspace/tingting/Dynamic-Decoding
+
+PYTHONPATH="/workspace/tingting/Dynamic-Decoding:gpqa/baselines:$PYTHONPATH" python gpqa/baselines/extensions/evaluation/run_evaluation_hf_gpt_oss.py \
+  --model openai/gpt-oss-20b \
+  --data gpqa/baselines/dataset/gpqa_diamond.csv \
+  --output evaluation_results_hf \
+  --device_id 0 \
+  --run_path_comparison \
+  --full_evaluation \
+  --verbose
 
 **重要**：验证「trough 后存在负面扰动」假设时，必须使用 `--run_path_comparison` 进行路径对比。
 `--full_evaluation` 将额外运行扰动分析、报告生成与可视化。
 
 Requires: transformers-dynamic package on path (GptOssForCausalLM, entropy_decoding),
           gpqa baselines on path (extensions.utils.gpqa_loader).
+
+熵谷算法：熵的计算与层选择在 transformers-dynamic/utils/entropy.py
+（calculate_information_entropy, _select_layers_from_entropies）；
+生成流程在 transformers-dynamic/generation/utils.py 的 _entropy_decoding。
 """
 import argparse
 import json
@@ -28,6 +33,33 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, desc=None, **kwargs):
+        return iterable
+
+
+class TeeLogger:
+    """Write to both stdout and a log file."""
+    def __init__(self, log_path: Path):
+        self._file = open(log_path, "w", encoding="utf-8")
+        self._stdout = sys.stdout
+
+    def write(self, data: str):
+        self._stdout.write(data)
+        self._file.write(data)
+        self._file.flush()
+
+    def flush(self):
+        self._stdout.flush()
+        self._file.flush()
+
+    def close(self):
+        self._file.close()
+        sys.stdout = self._stdout
+
 
 # Ensure gpqa baselines and transformers-dynamic are on path when run from repo root
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -140,6 +172,7 @@ def collect_divergence_points_hf(
     device: str = "cuda",
     verbose: bool = False,
     return_stats: bool = False,
+    use_tqdm: bool = True,
 ) -> List[Dict] | Tuple[List[Dict], Dict]:
     """
     使用 HuggingFace GptOssForCausalLM + entropy_decoding="trough" 收集分歧点。
@@ -149,18 +182,25 @@ def collect_divergence_points_hf(
     total_token_steps = 0
     num_examples_processed = 0
     generation_config = getattr(model, "generation_config", None) or {}
-    if hasattr(generation_config, "copy"):
+    if isinstance(generation_config, dict):
+        gen_config = dict(generation_config)
+    elif hasattr(generation_config, "to_dict"):
+        gen_config = generation_config.to_dict()
+    elif hasattr(generation_config, "copy"):
         gen_config = generation_config.copy()
+        if not isinstance(gen_config, dict) and hasattr(gen_config, "to_dict"):
+            gen_config = gen_config.to_dict()
     else:
-        gen_config = dict(generation_config) if generation_config else {}
+        gen_config = {}
 
     gen_config["entropy_decoding"] = "trough"
     gen_config["entropy_record_tokens"] = True
     gen_config["return_dict_in_generate"] = True
     gen_config["max_new_tokens"] = max_new_tokens
 
-    for question_id, example in enumerate(dataset):
-        if verbose and question_id % 10 == 0:
+    iter_dataset = tqdm(dataset, desc="Collecting divergence") if use_tqdm else dataset
+    for question_id, example in enumerate(iter_dataset):
+        if verbose and not use_tqdm and question_id % 10 == 0:
             print(f"Processing question {question_id}/{len(dataset)}...")
 
         prompt = create_zero_shot_prompt(example)
@@ -392,6 +432,7 @@ def main():
     )
     parser.add_argument("--data", type=str, required=True, help="GPQA diamond CSV path")
     parser.add_argument("--output", type=str, default="evaluation_results_hf", help="Output directory")
+    parser.add_argument("--max_questions", type=int, default=10, help="Max number of questions to run (default 10 for quick test; use large value for full run)")
     parser.add_argument("--max_examples", type=int, default=None)
     parser.add_argument("--max_tokens", type=int, default=512)
     parser.add_argument("--device", type=str, default=None, help="设备字符串，如 cuda, cuda:0, cpu；与 --device_id 二选一")
@@ -428,165 +469,170 @@ def main():
 
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    print("Loading dataset...")
-    dataset = load_gpqa_diamond(args.data, seed=args.seed)
-    if args.max_examples:
-        dataset = dataset[: args.max_examples]
-    print(f"Loaded {len(dataset)} examples")
-
-    print("Loading model and tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    if GptOssForCausalLM is not None:
-        model = GptOssForCausalLM.from_pretrained(args.model, trust_remote_code=True).to(args.device)
-    else:
-        model = AutoModelForCausalLM.from_pretrained(args.model, trust_remote_code=True).to(args.device)
-    if getattr(model.config, "model_type", None) != "gpt_oss":
-        print("Warning: model_type is not gpt_oss; entropy_decoding may not be used.")
-
-    run_path_comparison = args.run_path_comparison or args.full_evaluation
-
-    print("Collecting divergence points (entropy_decoding=trough)...")
-    divergence_points, collect_stats = collect_divergence_points_hf(
-        model=model,
-        tokenizer=tokenizer,
-        dataset=dataset,
-        max_new_tokens=args.max_tokens,
-        device=args.device,
-        verbose=args.verbose,
-        return_stats=True,
-    )
-    print(f"Found {len(divergence_points)} divergence points")
-
-    total_token_steps = collect_stats.get("total_token_steps", 0)
-    divergence_rate = (len(divergence_points) / total_token_steps) if total_token_steps > 0 else 0.0
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    div_file = out_dir / f"divergence_points_hf_{timestamp}.json"
-    with open(div_file, "w", encoding="utf-8") as f:
-        json.dump(divergence_points, f, indent=2, ensure_ascii=False)
-    print(f"Saved to {div_file}")
+    log_file = out_dir / f"run_log_{timestamp}.txt"
+    tee = TeeLogger(log_file)
+    sys.stdout = tee
+    try:
+        print(f"Log file: {log_file}")
 
-    path_comparisons: List[Dict] = []
-    if run_path_comparison and divergence_points:
-        print("Running path comparison (greedy)...")
-        for i, div_point in enumerate(divergence_points):
-            if args.verbose and i % 10 == 0:
-                print(f"  Path comparison {i+1}/{len(divergence_points)}...")
-            base_prompt = create_zero_shot_prompt(dataset[div_point["question_id"]])
-            context_before = "".join(div_point.get("context_before", []))
-            full_context = base_prompt + context_before
-            try:
-                comp = compare_paths_hf(
-                    model=model,
-                    tokenizer=tokenizer,
-                    divergence_point=div_point,
-                    full_context_before=full_context,
-                    max_new_tokens=args.max_tokens,
-                    device=args.device,
-                    seed=args.seed,
-                )
-                path_comparisons.append(comp)
-            except Exception as e:
-                if args.verbose:
-                    print(f"  Error: {e}")
-                path_comparisons.append({"path_a": {"is_correct": False}, "path_b": {"is_correct": False}, "accuracy_diff": 0.0})
+        print("Loading dataset...")
+        dataset = load_gpqa_diamond(args.data, seed=args.seed)
+        if args.max_examples is not None:
+            dataset = dataset[: args.max_examples]
+        if getattr(args, "max_questions", None) is not None and args.max_questions > 0:
+            dataset = dataset[: args.max_questions]
+        print(f"Loaded {len(dataset)} examples (max_questions={getattr(args, 'max_questions', None)})")
 
-        comp_file = out_dir / f"path_comparisons_hf_{timestamp}.json"
-        with open(comp_file, "w", encoding="utf-8") as f:
-            json.dump(path_comparisons, f, indent=2, ensure_ascii=False)
-        a_ok = sum(1 for c in path_comparisons if c.get("path_a", {}).get("is_correct", False))
-        b_ok = sum(1 for c in path_comparisons if c.get("path_b", {}).get("is_correct", False))
-        print(f"Path A accuracy: {a_ok}/{len(path_comparisons)}, Path B accuracy: {b_ok}/{len(path_comparisons)}")
-        print(f"Saved to {comp_file}")
+        print("Loading model and tokenizer...")
+        tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+        if GptOssForCausalLM is not None:
+            model = GptOssForCausalLM.from_pretrained(args.model, trust_remote_code=True).to(args.device)
+        else:
+            model = AutoModelForCausalLM.from_pretrained(args.model, trust_remote_code=True).to(args.device)
+        if getattr(model.config, "model_type", None) != "gpt_oss":
+            print("Warning: model_type is not gpt_oss; entropy_decoding may not be used.")
 
-    # 多采样路径对比（可选）
-    if args.sampling_k > 0 and divergence_points:
-        n_sampling = min(args.sampling_max_divergence_points, len(divergence_points))
-        print(f"Running multi-sample path comparison (k={args.sampling_k}) on {n_sampling} divergence points...")
-        sampling_results = []
-        for i in range(n_sampling):
-            if args.verbose and i % 5 == 0:
-                print(f"  Sampling divergence point {i+1}/{n_sampling}...")
-            div_point = divergence_points[i]
-            base_prompt = create_zero_shot_prompt(dataset[div_point["question_id"]])
-            context_before = "".join(div_point.get("context_before", []))
-            full_context = base_prompt + context_before
-            try:
-                res = compare_paths_with_sampling_hf(
-                    model=model,
-                    tokenizer=tokenizer,
-                    divergence_point=div_point,
-                    full_context_before=full_context,
-                    max_new_tokens=args.max_tokens,
-                    device=args.device,
-                    k=args.sampling_k,
-                    temperature=args.sampling_temperature,
-                    seed=args.seed,
-                )
-                sampling_results.append(res)
-            except Exception as e:
-                if args.verbose:
-                    print(f"  Error: {e}")
-        if sampling_results:
-            path_a_better = sum(1 for r in sampling_results if r.get("path_a_better", False))
-            print(f"  Path A better in {path_a_better}/{len(sampling_results)} divergence points")
-            samp_file = out_dir / f"sampling_comparisons_hf_{timestamp}.json"
-            with open(samp_file, "w", encoding="utf-8") as f:
-                json.dump(sampling_results, f, indent=2, ensure_ascii=False)
-            print(f"Saved to {samp_file}")
+        run_path_comparison = args.run_path_comparison or args.full_evaluation
 
-    # 完整评估：扰动分析、报告、可视化
-    if args.full_evaluation and divergence_points and path_comparisons:
-        print("Running perturbation analysis...")
-        perturbation_analyses = [analyze_perturbation_start(dp) for dp in divergence_points]
-        pert_file = out_dir / f"perturbation_analyses_hf_{timestamp}.json"
-        with open(pert_file, "w", encoding="utf-8") as f:
-            json.dump(perturbation_analyses, f, indent=2, ensure_ascii=False)
-        print(f"Saved to {pert_file}")
-
-        evaluation_results = evaluate_perturbation_impact(
-            divergence_points=divergence_points,
-            path_comparisons=path_comparisons,
+        print("Collecting divergence points (entropy_decoding=trough)...")
+        divergence_points, collect_stats = collect_divergence_points_hf(
+            model=model,
+            tokenizer=tokenizer,
+            dataset=dataset,
+            max_new_tokens=args.max_tokens,
+            device=args.device,
+            verbose=args.verbose,
+            return_stats=True,
         )
-        evaluation_results["total_token_steps"] = total_token_steps
-        evaluation_results["divergence_rate"] = divergence_rate
-        evaluation_results["num_examples_processed"] = collect_stats.get("num_examples_processed", 0)
+        print(f"Found {len(divergence_points)} divergence points")
 
-        eval_file = out_dir / f"evaluation_results_hf_{timestamp}.json"
-        with open(eval_file, "w", encoding="utf-8") as f:
-            json.dump(evaluation_results, f, indent=2, ensure_ascii=False)
-        print(f"Saved to {eval_file}")
+        total_token_steps = collect_stats.get("total_token_steps", 0)
+        divergence_rate = (len(divergence_points) / total_token_steps) if total_token_steps > 0 else 0.0
 
-        report_file = out_dir / f"report_hf_{timestamp}.txt"
-        _generate_text_report(
-            evaluation_results,
-            divergence_points,
-            path_comparisons,
-            perturbation_analyses,
-            report_file,
-        )
-        print(f"Saved report to {report_file}")
+        div_file = out_dir / f"divergence_points_hf_{timestamp}.json"
+        with open(div_file, "w", encoding="utf-8") as f:
+            json.dump(divergence_points, f, indent=2, ensure_ascii=False)
+        print(f"Saved to {div_file}")
 
-        print("Creating visualizations...")
-        try:
-            create_all_visualizations(
+        path_comparisons: List[Dict] = []
+        if run_path_comparison and divergence_points:
+            print("Running path comparison (greedy)...")
+            for i, div_point in enumerate(tqdm(divergence_points, desc="Path comparison")):
+                base_prompt = create_zero_shot_prompt(dataset[div_point["question_id"]])
+                context_before = "".join(div_point.get("context_before", []))
+                full_context = base_prompt + context_before
+                try:
+                    comp = compare_paths_hf(
+                        model=model,
+                        tokenizer=tokenizer,
+                        divergence_point=div_point,
+                        full_context_before=full_context,
+                        max_new_tokens=args.max_tokens,
+                        device=args.device,
+                        seed=args.seed,
+                    )
+                    path_comparisons.append(comp)
+                except Exception as e:
+                    if args.verbose:
+                        print(f"  Error: {e}")
+                    path_comparisons.append({"path_a": {"is_correct": False}, "path_b": {"is_correct": False}, "accuracy_diff": 0.0})
+
+            comp_file = out_dir / f"path_comparisons_hf_{timestamp}.json"
+            with open(comp_file, "w", encoding="utf-8") as f:
+                json.dump(path_comparisons, f, indent=2, ensure_ascii=False)
+            a_ok = sum(1 for c in path_comparisons if c.get("path_a", {}).get("is_correct", False))
+            b_ok = sum(1 for c in path_comparisons if c.get("path_b", {}).get("is_correct", False))
+            print(f"Path A accuracy: {a_ok}/{len(path_comparisons)}, Path B accuracy: {b_ok}/{len(path_comparisons)}")
+            print(f"Saved to {comp_file}")
+
+        # 多采样路径对比（可选）
+        if args.sampling_k > 0 and divergence_points:
+            n_sampling = min(args.sampling_max_divergence_points, len(divergence_points))
+            print(f"Running multi-sample path comparison (k={args.sampling_k}) on {n_sampling} divergence points...")
+            sampling_results = []
+            for i in tqdm(range(n_sampling), desc="Sampling path comparison"):
+                div_point = divergence_points[i]
+                base_prompt = create_zero_shot_prompt(dataset[div_point["question_id"]])
+                context_before = "".join(div_point.get("context_before", []))
+                full_context = base_prompt + context_before
+                try:
+                    res = compare_paths_with_sampling_hf(
+                        model=model,
+                        tokenizer=tokenizer,
+                        divergence_point=div_point,
+                        full_context_before=full_context,
+                        max_new_tokens=args.max_tokens,
+                        device=args.device,
+                        k=args.sampling_k,
+                        temperature=args.sampling_temperature,
+                        seed=args.seed,
+                    )
+                    sampling_results.append(res)
+                except Exception as e:
+                    if args.verbose:
+                        print(f"  Error: {e}")
+            if sampling_results:
+                path_a_better = sum(1 for r in sampling_results if r.get("path_a_better", False))
+                print(f"  Path A better in {path_a_better}/{len(sampling_results)} divergence points")
+                samp_file = out_dir / f"sampling_comparisons_hf_{timestamp}.json"
+                with open(samp_file, "w", encoding="utf-8") as f:
+                    json.dump(sampling_results, f, indent=2, ensure_ascii=False)
+                print(f"Saved to {samp_file}")
+
+        # 完整评估：扰动分析、报告、可视化
+        if args.full_evaluation and divergence_points and path_comparisons:
+            print("Running perturbation analysis...")
+            perturbation_analyses = [analyze_perturbation_start(dp) for dp in divergence_points]
+            pert_file = out_dir / f"perturbation_analyses_hf_{timestamp}.json"
+            with open(pert_file, "w", encoding="utf-8") as f:
+                json.dump(perturbation_analyses, f, indent=2, ensure_ascii=False)
+            print(f"Saved to {pert_file}")
+
+            evaluation_results = evaluate_perturbation_impact(
                 divergence_points=divergence_points,
-                evaluation_results=evaluation_results,
-                output_dir=out_dir,
+                path_comparisons=path_comparisons,
             )
-        except Exception as e:
-            print(f"Warning: Failed to create visualizations: {e}")
+            evaluation_results["total_token_steps"] = total_token_steps
+            evaluation_results["divergence_rate"] = divergence_rate
+            evaluation_results["num_examples_processed"] = collect_stats.get("num_examples_processed", 0)
 
-        print("=" * 80)
-        print("Evaluation Summary")
-        print("=" * 80)
-        print(f"Total divergence points: {evaluation_results['total_divergence_points']}")
-        print(f"Divergence rate: {evaluation_results.get('divergence_rate', 0):.2%}")
-        print(f"Path A (trough layer) accuracy: {evaluation_results['path_a_accuracy']:.2%}")
-        print(f"Path B (final layer) accuracy: {evaluation_results['path_b_accuracy']:.2%}")
-        print(f"Accuracy improvement: {evaluation_results['accuracy_improvement']:.2%}")
-        print("=" * 80)
+            eval_file = out_dir / f"evaluation_results_hf_{timestamp}.json"
+            with open(eval_file, "w", encoding="utf-8") as f:
+                json.dump(evaluation_results, f, indent=2, ensure_ascii=False)
+            print(f"Saved to {eval_file}")
+
+            report_file = out_dir / f"report_hf_{timestamp}.txt"
+            _generate_text_report(
+                evaluation_results,
+                divergence_points,
+                path_comparisons,
+                perturbation_analyses,
+                report_file,
+            )
+            print(f"Saved report to {report_file}")
+
+            print("Creating visualizations...")
+            try:
+                create_all_visualizations(
+                    divergence_points=divergence_points,
+                    evaluation_results=evaluation_results,
+                    output_dir=out_dir,
+                )
+            except Exception as e:
+                print(f"Warning: Failed to create visualizations: {e}")
+
+            print("=" * 80)
+            print("Evaluation Summary")
+            print("=" * 80)
+            print(f"Total divergence points: {evaluation_results['total_divergence_points']}")
+            print(f"Divergence rate: {evaluation_results.get('divergence_rate', 0):.2%}")
+            print(f"Path A (trough layer) accuracy: {evaluation_results['path_a_accuracy']:.2%}")
+            print(f"Path B (final layer) accuracy: {evaluation_results['path_b_accuracy']:.2%}")
+            print(f"Accuracy improvement: {evaluation_results['accuracy_improvement']:.2%}")
+            print("=" * 80)
+    finally:
+        tee.close()
 
 
 if __name__ == "__main__":

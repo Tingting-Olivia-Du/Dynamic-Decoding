@@ -173,28 +173,30 @@ pip install matplotlib numpy
 - HuggingFace：`username/gpt-oss-20b-trough`
 
 ```bash
-cd /path/to/Dynamic-Decoding
-PYTHONPATH="transformers-dynamic:gpqa/baselines:$PYTHONPATH" python gpqa/baselines/extensions/evaluation/run_evaluation_hf_gpt_oss.py \
+cd /workspace/tingting/Dynamic-Decoding
+PYTHONPATH="/workspace/tingting/Dynamic-Decoding:gpqa/baselines:$PYTHONPATH" python gpqa/baselines/extensions/evaluation/run_evaluation_hf_gpt_oss.py \
   --model openai/gpt-oss-20b \
   --data gpqa/baselines/dataset/gpqa_diamond.csv \
   --output evaluation_results_hf \
   --device_id 0 \
-  --max_examples 5 \
-  --max_tokens 8192 \
   --run_path_comparison \
   --full_evaluation \
-  --sampling_k 5 \
   --verbose
 ```
 
 ### HF 脚本参数说明
 
 - `--model`: **必需**。GptOss checkpoint 本地路径或 HuggingFace 模型 ID
+- `--max_questions`: 最多评估的问题数（默认 10，便于快速试跑；完整评估可传较大值，如 100 或 0 表示不限制）
 - `--run_path_comparison`: 对每个分歧点运行路径对比（trough token vs 末层 token），**验证假设时必选**
 - `--full_evaluation`: 完整评估（含扰动分析、报告、可视化），隐含 `--run_path_comparison`
 - `--sampling_k`: 若 >0，对前 N 个分歧点做 k 次采样路径对比，用于更稳健的验证
 - `--sampling_max_divergence_points`: 参与多采样的最大分歧点数量（默认 20）
 - `--sampling_temperature`: 多采样时的温度（默认 0.7）
+
+HF 脚本会**自动将控制台输出写入**输出目录下的 `run_log_<timestamp>.txt`，并**使用 tqdm 显示进度条**（收集分歧点、路径对比、多采样对比）。
+
+**熵谷算法实现位置**：熵的计算与层选择在 `transformers-dynamic/utils/entropy.py`（`calculate_information_entropy`, `_select_layers_from_entropies`）；生成流程在 `transformers-dynamic/generation/utils.py` 的 `_entropy_decoding`。
 
 输出与主流程兼容的 `divergence_points_hf_*.json`、`path_comparisons_hf_*.json`、`perturbation_analyses_hf_*.json`、`evaluation_results_hf_*.json`、`report_hf_*.txt` 及可视化图表。
 

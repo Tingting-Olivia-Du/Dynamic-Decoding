@@ -12,11 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""openai model configuration
-
-GPT-OSS 模型配置。本项目将该模型作为基于熵的动态解码（entropy_decoding）的主要支持模型，
-因其支持输出各层 hidden states，便于逐层计算熵并选层解码。
-"""
+"""openai model configuration"""
 
 from ...configuration_utils import PretrainedConfig, layer_type_validation
 from ...modeling_rope_utils import rope_config_validation

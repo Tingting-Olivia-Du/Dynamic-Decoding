@@ -12,12 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-GPT-OSS 模块化实现（modeling_gpt_oss.py 由此文件生成）。
-
-MoE 结构的 decoder-only 模型，支持 output_hidden_states 输出各层 hidden states，
-用于基于熵的动态层解码（entropy_decoding）。通过 OutputRecorder 等机制收集各层表示。
-"""
 from typing import Callable, Optional
 
 import torch

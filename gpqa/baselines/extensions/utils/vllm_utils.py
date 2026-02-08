@@ -1,14 +1,29 @@
-from vllm import LLM, SamplingParams
+"""vLLM 工具。vllm 为可选依赖，仅在调用 generate_vllm/build_llm/sample 时需要。"""
+
+try:
+    from vllm import LLM, SamplingParams
+    _VLLM_AVAILABLE = True
+except ImportError:
+    LLM = None  # type: ignore
+    SamplingParams = None  # type: ignore
+    _VLLM_AVAILABLE = False
+
+
+def _require_vllm():
+    if not _VLLM_AVAILABLE:
+        raise ImportError(
+            "vllm is required for this function. Install with: pip install vllm"
+        )
 
 
 # Create an offline LLM instance.
 def build_llm(model: str, **engine_kwargs):
-    llm = LLM(model, **engine_kwargs)
-    return llm
+    _require_vllm()
+    return LLM(model, **engine_kwargs)
 
 
 # Generate text with LLM and sampling params.
-def sample(llm: LLM, prompts: list[str] | str, n: int = 1, **sample_kwargs) -> list[list[str]]:
+def sample(llm, prompts: list[str] | str, n: int = 1, **sample_kwargs) -> list[list[str]]:
     # Create a sampling params object
     sampling_params = SamplingParams(n=n, **sample_kwargs)
 

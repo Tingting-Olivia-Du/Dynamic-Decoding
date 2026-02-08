@@ -20,8 +20,8 @@
 cd gpqa/baselines/extensions/evaluation
 python run_evaluation.py \
     --model "your-model-name" \
-    --data "path/to/gpqa_diamond.csv" \
-    --output "evaluation_results" \
+    --data "/workspace/tingting/Dynamic-Decoding/gpqa/baselines/dataset/gpqa_diamond.csv" \
+    --output "diverge_results" \
     --device_id 0 \
     --verbose
 ```
@@ -30,7 +30,7 @@ python run_evaluation.py \
 
 ### 参数说明
 
-- `--model`: 模型名称或路径（必需）
+- `--model`: 模型名称或路径（必需）。本地 checkpoint 路径（如 `/path/to/your/gpt-oss-20b-trough`）或 HuggingFace 模型 ID
 - `--data`: GPQA-diamond数据集CSV文件路径（必需）
 - `--output`: 输出目录（默认：evaluation_results）
 - `--max_examples`: 最大评估样本数（默认：全部）
@@ -164,22 +164,39 @@ pip install matplotlib numpy
 
 ## 可选：使用 transformers-dynamic + GptOss 收集分歧点
 
-若需与 HF 的 `_entropy_decoding` 代码路径一致，可使用 `run_evaluation_hf_gpt_oss.py`（需将 transformers-dynamic 与 gpqa baselines 加入 PYTHONPATH）：
+若需与 HF 的 `_entropy_decoding` 代码路径一致，可使用 `run_evaluation_hf_gpt_oss.py`（需将 transformers-dynamic 与 gpqa baselines 加入 PYTHONPATH）。
+
+**重要**：验证「trough 后存在负面扰动」假设时，**必须**使用 `--run_path_comparison` 进行路径对比。建议使用 `--full_evaluation` 运行完整评估（路径对比 + 扰动分析 + 报告 + 可视化）。
+
+**`--model` 填写说明**：填写你的 trough 算法修改后的 GPT-OSS 模型路径或 HuggingFace 模型 ID，例如：
+- 本地路径：`/path/to/your/gpt-oss-20b-trough-checkpoint`
+- HuggingFace：`username/gpt-oss-20b-trough`
 
 ```bash
 cd /path/to/Dynamic-Decoding
 PYTHONPATH="transformers-dynamic:gpqa/baselines:$PYTHONPATH" python gpqa/baselines/extensions/evaluation/run_evaluation_hf_gpt_oss.py \
-  --model /path/to/gpt-oss-checkpoint \
+  --model openai/gpt-oss-20b \
   --data gpqa/baselines/dataset/gpqa_diamond.csv \
   --output evaluation_results_hf \
   --device_id 0 \
   --max_examples 5 \
   --max_tokens 8192 \
   --run_path_comparison \
+  --full_evaluation \
+  --sampling_k 5 \
   --verbose
 ```
 
-输出与主流程兼容的 `divergence_points_hf.json` 及可选的 `path_comparisons_hf.json`，可用于同一套扰动分析与可视化（需将 JSON 键与 gpqa 格式对齐）。
+### HF 脚本参数说明
+
+- `--model`: **必需**。GptOss checkpoint 本地路径或 HuggingFace 模型 ID
+- `--run_path_comparison`: 对每个分歧点运行路径对比（trough token vs 末层 token），**验证假设时必选**
+- `--full_evaluation`: 完整评估（含扰动分析、报告、可视化），隐含 `--run_path_comparison`
+- `--sampling_k`: 若 >0，对前 N 个分歧点做 k 次采样路径对比，用于更稳健的验证
+- `--sampling_max_divergence_points`: 参与多采样的最大分歧点数量（默认 20）
+- `--sampling_temperature`: 多采样时的温度（默认 0.7）
+
+输出与主流程兼容的 `divergence_points_hf_*.json`、`path_comparisons_hf_*.json`、`perturbation_analyses_hf_*.json`、`evaluation_results_hf_*.json`、`report_hf_*.txt` 及可视化图表。
 
 ## 相关文档
 

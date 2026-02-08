@@ -6,20 +6,21 @@ sys.path.append(path)
 
 from llms.engine import Engine
 from extensions.utils.entropy import calculate_information_entropy
-from extensions.utils.format import make_raw_chat_prompt
 from extensions.utils.vllm_utils import sample, LLM
+
+# 与 transformers-dynamic/generation/utils.py 一致：使用 raw prompt 直接 tokenize，不应用 chat template。
+# 参考 run_evaluation_hf_gpt_oss.py：prompt -> tokenizer(prompt) -> model.generate(**inputs)
 
 
 def generate(engine: Engine, prompt: str, max_length: int = 1024, max_new_tokens: int = 512, use_dynamic_layers: bool = False, **kwargs) -> str:
     """
-    生成回复（不含特殊 tokens）。
+    生成回复（不含特殊 tokens）。与 transformers-dynamic 一致：raw prompt 直接传入，不应用 chat template。
     """
     eos_token_id = engine.tokenizer.eos_token_id
-    chat_prompt = make_raw_chat_prompt(prompt, "", engine.tokenizer)
 
     if not use_dynamic_layers:
         result = engine.generate(
-            chat_prompt,
+            prompt,
             max_length=max_length,
             max_new_tokens=max_new_tokens,
             skip_special_tokens=False,
@@ -32,7 +33,7 @@ def generate(engine: Engine, prompt: str, max_length: int = 1024, max_new_tokens
         generated_token_ids = []
         entropies = []
 
-        current_prompt = chat_prompt
+        current_prompt = prompt
 
         # 动态层数
         n_dynamic_layers = 0
@@ -81,13 +82,12 @@ def generate(engine: Engine, prompt: str, max_length: int = 1024, max_new_tokens
 
 def generate_simple(engine: Engine, prompt: str, max_length: int = 1024, max_new_tokens: int = 512, use_dynamic_layers: bool = False, entropy_criterion=None, output_dict: bool = False, **kwargs) -> str | tuple[str, dict]:
     """
-    生成回复（不含特殊 tokens），基于魔改的transformers库。
+    生成回复（不含特殊 tokens）。与 transformers-dynamic 一致：raw prompt 直接传入，不应用 chat template。
     """
     eos_token_id = engine.tokenizer.eos_token_id
-    chat_prompt = make_raw_chat_prompt(prompt, "", engine.tokenizer)
 
     result = engine.generate(
-        chat_prompt,
+        prompt,
         max_length=max_length,
         max_new_tokens=max_new_tokens,
         skip_special_tokens=False,
@@ -108,10 +108,9 @@ def generate_simple(engine: Engine, prompt: str, max_length: int = 1024, max_new
 
 def generate_vllm(llm: LLM, tokenizer, prompt: str, max_new_tokens: int = 512, **kwargs) -> str:
     """
-    生成回复（不含特殊 tokens），基于 vLLM 库。
+    生成回复（不含特殊 tokens），基于 vLLM 库。与 transformers-dynamic 一致：raw prompt 直接传入。
     """
-    chat_prompt = make_raw_chat_prompt(prompt, "", tokenizer)
-    result = sample(llm, chat_prompt, n=1, max_tokens=max_new_tokens, **kwargs)
+    result = sample(llm, prompt, n=1, max_tokens=max_new_tokens, **kwargs)
     generated_text = result[0][0]
     return generated_text
 
@@ -134,10 +133,9 @@ def generate_conservative_dynamic(engine: Engine, prompt: str, max_length: int =
     :return: 生成的文本，或(文本, 详细信息)元组
     """
     eos_token_id = engine.tokenizer.eos_token_id
-    chat_prompt = make_raw_chat_prompt(prompt, "", engine.tokenizer)
-    
+    # 与 transformers-dynamic 一致：raw prompt 直接传入，不应用 chat template
     generated_token_ids = []
-    current_prompt = chat_prompt
+    current_prompt = prompt
     
     # 存储每个token的详细信息
     generation_info = {
